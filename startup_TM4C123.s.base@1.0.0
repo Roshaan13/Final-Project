@@ -1,0 +1,194 @@
+// os.c
+// Runs on LM4F120/TM4C123/MSP432
+// Lab 2 starter file.
+// Daniel Valvano
+// February 20, 2016
+
+#include <stdint.h>
+#include "os.h"
+#include "../inc/CortexM.h"
+#include "../inc/BSP.h"
+
+// function definitions in osasm.s
+void StartOS(void);
+
+tcbType tcbs[NUMTHREADS];
+tcbType *RunPt;
+int32_t Stacks[NUMTHREADS][STACKSIZE];
+
+// -------- Periodic event thread variables --------
+// All prefixed with OS_ to avoid conflict with TExaS grader globals
+static void(*OS_PTask1)(void);
+static uint32_t OS_Per1;
+static uint32_t OS_Cnt1;
+
+static void(*OS_PTask2)(void);
+static uint32_t OS_Per2;
+static uint32_t OS_Cnt2;
+
+// -------- Mailbox variables --------
+// Prefixed to avoid any potential conflict with TExaS grader
+static uint32_t OS_MBoxData;
+static int32_t OS_MBoxSend;  // semaphore: signaled when data available
+
+// ******** OS_Init ************
+// Initialize operating system, disable interrupts
+// Initialize OS controlled I/O: systick, bus clock as fast as possible
+// Initialize OS global variables
+// Inputs:  none
+// Outputs: none
+void OS_Init(void){
+  DisableInterrupts();
+  BSP_Clock_InitFastest();// set processor clock to fastest speed
+  // initialize any global variables as needed
+  OS_Cnt1 = 0;
+  OS_Cnt2 = 0;
+}
+
+// Lecture 2 Slide 69
+void SetInitialStack(int i){
+  tcbs[i].sp = &Stacks[i][STACKSIZE-16]; // thread stack pointer
+  Stacks[i][STACKSIZE-1] = 0x01000000;   // Thumb bit
+  Stacks[i][STACKSIZE-3] = 0x14141414;   // R14
+  Stacks[i][STACKSIZE-4] = 0x12121212;   // R12
+  Stacks[i][STACKSIZE-5] = 0x03030303;   // R3
+  Stacks[i][STACKSIZE-6] = 0x02020202;   // R2
+  Stacks[i][STACKSIZE-7] = 0x01010101;   // R1
+  Stacks[i][STACKSIZE-8] = 0x00000000;   // R0
+  Stacks[i][STACKSIZE-9]  = 0x11111111;  // R11
+  Stacks[i][STACKSIZE-10] = 0x10101010;  // R10
+  Stacks[i][STACKSIZE-11] = 0x09090909;  // R9
+  Stacks[i][STACKSIZE-12] = 0x08080808;  // R8
+  Stacks[i][STACKSIZE-13] = 0x07070707;  // R7
+  Stacks[i][STACKSIZE-14] = 0x06060606;  // R6
+  Stacks[i][STACKSIZE-15] = 0x05050505;  // R5
+  Stacks[i][STACKSIZE-16] = 0x04040404;  // R4
+}
+
+// Lecture 2 Slide 68 (extended to 4 threads)
+//******** OS_AddThreads ***************
+int OS_AddThreads(void(*thread0)(void),
+                  void(*thread1)(void),
+                  void(*thread2)(void),
+                  void(*thread3)(void)){
+  int32_t status;
+  status = StartCritical();
+  tcbs[0].next = &tcbs[1]; // 0 points to 1
+  tcbs[1].next = &tcbs[2]; // 1 points to 2
+  tcbs[2].next = &tcbs[3]; // 2 points to 3
+  tcbs[3].next = &tcbs[0]; // 3 points to 0
+
+  SetInitialStack(0); Stacks[0][STACKSIZE-2] = (int32_t)(thread0); // PC
+  SetInitialStack(1); Stacks[1][STACKSIZE-2] = (int32_t)(thread1); // PC
+  SetInitialStack(2); Stacks[2][STACKSIZE-2] = (int32_t)(thread2); // PC
+  SetInitialStack(3); Stacks[3][STACKSIZE-2] = (int32_t)(thread3); // PC
+  RunPt = &tcbs[0];       // thread 0 will run first
+  EndCritical(status);
+  return 1;               // successful
+}
+
+// Lecture 2 Slide 68 (3 thread version)
+//******** OS_AddThreads3 ***************
+int OS_AddThreads3(void(*task0)(void),
+                 void(*task1)(void),
+                 void(*task2)(void)){
+  int32_t status;
+  status = StartCritical();
+  tcbs[0].next = &tcbs[1]; // 0 points to 1
+  tcbs[1].next = &tcbs[2]; // 1 points to 2
+  tcbs[2].next = &tcbs[0]; // 2 points to 0
+
+  SetInitialStack(0); Stacks[0][STACKSIZE-2] = (int32_t)(task0); // PC
+  SetInitialStack(1); Stacks[1][STACKSIZE-2] = (int32_t)(task1); // PC
+  SetInitialStack(2); Stacks[2][STACKSIZE-2] = (int32_t)(task2); // PC
+  RunPt = &tcbs[0];       // thread 0 will run first
+  EndCritical(status);
+  return 1;               // successful
+}
+
+//******** OS_AddPeriodicEventThreads ***************
+int OS_AddPeriodicEventThreads(void(*thread1)(void), uint32_t period1,
+  void(*thread2)(void), uint32_t period2){
+  OS_PTask1 = thread1;
+  OS_Per1 = period1;
+  OS_Cnt1 = 0;
+  OS_PTask2 = thread2;
+  OS_Per2 = period2;
+  OS_Cnt2 = 0;
+  return 1;
+}
+
+//******** OS_Launch ***************
+void OS_Launch(uint32_t theTimeSlice){
+  STCTRL = 0;                  // disable SysTick during setup
+  STCURRENT = 0;               // any write to current clears it
+  SYSPRI3 =(SYSPRI3&0x00FFFFFF)|0xE0000000; // priority 7
+  STRELOAD = theTimeSlice - 1; // reload value
+  STCTRL = 0x00000007;         // enable, core clock and interrupt arm
+  StartOS();                   // start on the first task
+}
+
+// Lecture 2 Slide 88-89
+// runs every ms
+void Scheduler(void){ // every time slice
+  // run any periodic event threads if needed
+  OS_Cnt1 = OS_Cnt1 + 1;
+  if(OS_Cnt1 >= OS_Per1){
+    (*OS_PTask1)();            // run periodic task 1
+    OS_Cnt1 = 0;
+  }
+  OS_Cnt2 = OS_Cnt2 + 1;
+  if(OS_Cnt2 >= OS_Per2){
+    (*OS_PTask2)();            // run periodic task 2
+    OS_Cnt2 = 0;
+  }
+  RunPt = RunPt->next;        // Round Robin scheduler
+}
+
+// Lecture 2 Slide 94
+// ******** OS_InitSemaphore ************
+void OS_InitSemaphore(int32_t *semaPt, int32_t value){
+  (*semaPt) = value;
+}
+
+// Lecture 2 Slide 94
+// ******** OS_Wait ************
+void OS_Wait(int32_t *semaPt){
+  DisableInterrupts();
+  while((*semaPt) == 0){
+    EnableInterrupts();
+    DisableInterrupts();
+  }
+  (*semaPt) = (*semaPt) - 1;
+  EnableInterrupts();
+}
+
+// Lecture 2 Slide 94
+// ******** OS_Signal ************
+void OS_Signal(int32_t *semaPt){
+  DisableInterrupts();
+  (*semaPt) = (*semaPt) + 1;
+  EnableInterrupts();
+}
+
+// Lecture 2 Slide 105-106 (event thread producer version)
+// ******** OS_MailBox_Init ************
+void OS_MailBox_Init(void){
+  OS_MBoxData = 0;
+  OS_MBoxSend = 0;  // 0 = no data available
+}
+
+// ******** OS_MailBox_Send ************
+// Producer is event thread - do not spin/block
+void OS_MailBox_Send(uint32_t data){
+  OS_MBoxData = data;
+  OS_Signal(&OS_MBoxSend);
+}
+
+// ******** OS_MailBox_Recv ************
+// Consumer is main thread - spin until data available
+uint32_t OS_MailBox_Recv(void){ uint32_t data;
+  OS_Wait(&OS_MBoxSend);
+  data = OS_MBoxData;
+  return data;
+}

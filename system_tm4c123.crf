@@ -1,0 +1,4 @@
+.\objects\profile.o: ..\inc\Profile.c
+.\objects\profile.o: D:\ARM Files\Kiel_V5\ARM\ARM_Compiler_5.06u7\Bin\..\include\stdint.h
+.\objects\profile.o: ..\inc\../inc/tm4c123gh6pm.h
+.\objects\profile.o: ..\inc\BSP.h
