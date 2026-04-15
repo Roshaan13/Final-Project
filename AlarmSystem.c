@@ -68,7 +68,95 @@ void AlarmController(void) {
         OS_Signal(&AlarmStateMutex);
     }
 }
+// ============================================================
+// ButtonHandler (Tyrece)
+// ============================================================
+void ButtonHandler(void){
+    static uint8_t prev1 = 0, prev2 = 0;
+    uint8_t current;
 
+    while(1){
+
+        current = BSP_Button1_Input();
+
+        // Toggle ARM/DISARM
+        if((current == 0) && (prev1 != 0)){
+            OS_Wait(&AlarmStateMutex);
+
+            if(AlarmState == DISARMED){
+                AlarmState = ARMED;
+            } else {
+                AlarmState = DISARMED;
+            }
+
+            OS_Signal(&AlarmStateMutex);
+            BSP_Buzzer_Set(512);
+        }
+
+        prev1 = current;
+
+        current = BSP_Button2_Input();
+
+        // Force DISARM
+        if((current == 0) && (prev2 != 0)){
+            OS_Wait(&AlarmStateMutex);
+
+            AlarmState = DISARMED;
+
+            OS_Signal(&AlarmStateMutex);
+            BSP_Buzzer_Set(512);
+        }
+
+        prev2 = current;
+
+        BSP_Delay1ms(50); // debounce
+    }
+}
+
+// ============================================================
+// DisplayTask (Tyrece)
+// ============================================================
+void DisplayTask(void){
+
+    while(1){
+
+        OS_Wait(&AlarmStateMutex);
+
+        // LED + BUZZER
+        if(AlarmState == DISARMED){
+            BSP_RGB_Set(0,500,0); // GREEN
+            BSP_Buzzer_Set(0);
+        }
+        else if(AlarmState == ARMED){
+            BSP_RGB_Set(500,500,0); // YELLOW
+            BSP_Buzzer_Set(0);
+        }
+        else if(AlarmState == ALARM_TRIGGERED){
+            BSP_RGB_Set(500,0,0); // RED
+            BSP_Buzzer_Set(512);
+        }
+
+        // LCD
+				OS_Wait(&LCDmutex);
+
+				if(AlarmState == DISARMED){
+						BSP_LCD_DrawString(0,0,"SYSTEM: DISARMED", LCD_WHITE);
+			}
+				else if(AlarmState == ARMED){
+						BSP_LCD_DrawString(0,0,"SYSTEM: ARMED   ", LCD_WHITE);
+			}
+				else{
+						BSP_LCD_DrawString(0,0,"!!! ALARM !!!   ", LCD_WHITE);
+			}
+
+			OS_Signal(&LCDmutex);
+
+        OS_Signal(&LCDmutex);
+        OS_Signal(&AlarmStateMutex);
+
+        for(volatile int i=0; i<500000; i++);
+    }
+}
 // ============================================================
 // Dummy placeholder — used if a thread slot needs filling
 // during early testing (mirrors the lab's Dummy approach)
