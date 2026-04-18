@@ -31,6 +31,54 @@ int32_t AlarmStateMutex; // protects AlarmState reads/writes
 // Codes: 0 = no event, 1 = motion detected, 2 = sound detected
 // (Luke's periodic event threads call OS_MailBox_Send())
 
+uint8_t DetectIntruder(uint32_t motionValue, uint32_t soundValue) {
+	//The above 2 input variables are the received values from boosterpack
+	//Change the Variables for the sound constraint and motion constraint
+    #define MOTION_THRESHOLD  1000
+    #define SOUND_THRESHOLD   500
+
+    if (motionValue > MOTION_THRESHOLD) {
+        return 1;
+    }
+
+    if (soundValue > SOUND_THRESHOLD) {
+        return 1;
+    }
+
+    return 0;
+}
+//This is the code for motion detection
+void MotionSensorTask(void){
+    uint32_t motionData;
+
+    while(1){
+        motionData = ReadMotionSensor();
+		//Could remove intruder if we want direct variable *looks cleaner in my opinion*
+        uint8_t intruder = DetectIntruder(motionData, 0);
+
+        if(intruder){
+            OS_MailBox_Send(1); // intruder
+        } else {
+            OS_MailBox_Send(0); // no intruder
+        }
+    }
+}
+//Same as the above code but just for the microphone sensor
+void MicrophoneTask(void){
+    uint32_t soundData;
+
+    while(1){
+        soundData = ReadMicrophone();
+
+        uint8_t intruder = DetectIntruder(0, soundData);
+
+        if(intruder){
+            OS_MailBox_Send(1);
+        } else {
+            OS_MailBox_Send(0);
+        }
+    }
+}
 // ============================================================
 // AlarmController — YOUR main thread
 // Implements the alarm state machine
@@ -50,7 +98,7 @@ void AlarmController(void) {
                 // Ignore all sensor events while disarmed
                 // State transitions handled by Tyrece's button task via OS_Signal
                 break;
-
+			//Note to self change (sensorEvent == 1 || sensorEvent ==2) to (sensorEvent == 1) for simplicity *NOTE FOR LUKE INPUT*
             case ARMED:
                 if (sensorEvent == 1 || sensorEvent == 2) {
                     // Intruder detected — trigger alarm
@@ -148,7 +196,7 @@ void DisplayTask(void){
 				else{
 						BSP_LCD_DrawString(0,0,"!!! ALARM !!!   ", LCD_WHITE);
 			}
-
+			//We are double using OS_Signal(&LCDMutex) here, check with whoever codes on sunday for double input incase it breaks semaphore count loop from 0->1 1->0 to 0->1 1->2 ->0
 			OS_Signal(&LCDmutex);
 
         OS_Signal(&LCDmutex);
