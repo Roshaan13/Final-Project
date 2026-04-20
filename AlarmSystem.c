@@ -213,7 +213,7 @@ int main(void) {
     // Thread 2: DisplayTask     (Tyrece's — LCD)
     // Thread 3: Dummy / spare
     // Replace Dummy() below with Tyrece's actual functions when ready
-    OS_AddThreads(&AlarmController, &Dummy, &Dummy, &Dummy);
+    OS_AddThreads(&AlarmController, &ButtonHandler, &DisplayTask, &Dummy);
 
     OS_Launch(BSP_Clock_GetFreq() / THREADFREQ); // start RTOS, never returns
     return 0;
