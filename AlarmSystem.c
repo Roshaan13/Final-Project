@@ -72,47 +72,60 @@ void AlarmController(void) {
 // ButtonHandler (Tyrece)
 // ============================================================
 void ButtonHandler(void){
-    static uint8_t prev1 = 0, prev2 = 0;
+    static uint8_t prev1 = 0, prev2 = 0; 
+    // remember last button state so we only trigger once per press
+
     uint8_t current;
 
     while(1){
 
+        // ===== BUTTON 1 =====
         current = BSP_Button1_Input();
 
-        // Toggle ARM/DISARM
+        // if button just got pressed (was not pressed before)
         if((current == 0) && (prev1 != 0)){
-            OS_Wait(&AlarmStateMutex);
 
+            OS_Wait(&AlarmStateMutex); 
+            // lock so no other task changes AlarmState at same time
+
+            // switch between ON and OFF
             if(AlarmState == DISARMED){
                 AlarmState = ARMED;
             } else {
                 AlarmState = DISARMED;
             }
 
-            OS_Signal(&AlarmStateMutex);
-            BSP_Buzzer_Set(512);
+            OS_Signal(&AlarmStateMutex); 
+            // unlock after changing state
+
+            BSP_Buzzer_Set(512); 
+            // quick beep so user knows button worked
         }
 
-        prev1 = current;
+        prev1 = current; // save button state for next loop
 
+        // ===== BUTTON 2 =====
         current = BSP_Button2_Input();
 
-        // Force DISARM
+        // if button just got pressed
         if((current == 0) && (prev2 != 0)){
+
             OS_Wait(&AlarmStateMutex);
 
-            AlarmState = DISARMED;
+            AlarmState = DISARMED; 
+            // force system OFF no matter what
 
             OS_Signal(&AlarmStateMutex);
-            BSP_Buzzer_Set(512);
+
+            BSP_Buzzer_Set(512); // beep for feedback
         }
 
         prev2 = current;
 
-        BSP_Delay1ms(50); // debounce
+        BSP_Delay1ms(50); 
+        // small delay so one press doesn't count multiple times
     }
 }
-
 // ============================================================
 // DisplayTask (Tyrece)
 // ============================================================
@@ -120,40 +133,44 @@ void DisplayTask(void){
 
     while(1){
 
-        OS_Wait(&AlarmStateMutex);
+        OS_Wait(&AlarmStateMutex); 
+        // grab current system state safely
 
-        // LED + BUZZER
+        // ===== LED + BUZZER =====
         if(AlarmState == DISARMED){
-            BSP_RGB_Set(0,500,0); // GREEN
-            BSP_Buzzer_Set(0);
+            BSP_RGB_Set(0,500,0);   // green = system off
+            BSP_Buzzer_Set(0);      // no sound
         }
         else if(AlarmState == ARMED){
-            BSP_RGB_Set(500,500,0); // YELLOW
+            BSP_RGB_Set(500,500,0); // yellow = system ready
             BSP_Buzzer_Set(0);
         }
         else if(AlarmState == ALARM_TRIGGERED){
-            BSP_RGB_Set(500,0,0); // RED
-            BSP_Buzzer_Set(512);
+            BSP_RGB_Set(500,0,0);   // red = alarm
+            BSP_Buzzer_Set(512);    // make noise
         }
 
-        // LCD
-				OS_Wait(&LCDmutex);
+        // ===== LCD =====
+        OS_Wait(&LCDmutex); 
+        // make sure only this task writes to screen
 
-				if(AlarmState == DISARMED){
-						BSP_LCD_DrawString(0,0,"SYSTEM: DISARMED", LCD_WHITE);
-			}
-				else if(AlarmState == ARMED){
-						BSP_LCD_DrawString(0,0,"SYSTEM: ARMED   ", LCD_WHITE);
-			}
-				else{
-						BSP_LCD_DrawString(0,0,"!!! ALARM !!!   ", LCD_WHITE);
-			}
+        if(AlarmState == DISARMED){
+            BSP_LCD_DrawString(0,0,"SYSTEM: DISARMED", LCD_WHITE);
+        }
+        else if(AlarmState == ARMED){
+            BSP_LCD_DrawString(0,0,"SYSTEM: ARMED   ", LCD_WHITE);
+        }
+        else{
+            BSP_LCD_DrawString(0,0,"!!! ALARM !!!   ", LCD_WHITE);
+        }
 
-			OS_Signal(&LCDmutex);
+        OS_Signal(&LCDmutex); 
+        // done using screen
 
-        OS_Signal(&LCDmutex);
-        OS_Signal(&AlarmStateMutex);
+        OS_Signal(&AlarmStateMutex); 
+        // done using shared state
 
+        // slow things down so screen doesn't flicker
         for(volatile int i=0; i<500000; i++);
     }
 }
