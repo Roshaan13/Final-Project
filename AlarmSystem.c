@@ -32,6 +32,35 @@ int32_t AlarmStateMutex; // protects AlarmState reads/writes
 // (Luke's periodic event threads call OS_MailBox_Send())
 
 // ============================================================
+// TEMP TEST SENSOR EVENTS
+// ============================================================
+// These are temporary replacements for Luke's real sensor code.
+// They let the board actually trigger the alarm during testing.
+//
+// IMPORTANT:
+// Right now the old code used Dummy() for both periodic event threads,
+// which meant the alarm could never trigger from any sensor event.
+//
+// Once Luke finishes the real motion and microphone code,
+// replace these bodies with real sensor reads and threshold checks,
+// or replace these function names entirely with Luke's functions.
+// ============================================================
+
+// Temporary motion event thread
+// Sends a "motion detected" event into the mailbox
+void MotionSensorEvent(void){
+    OS_MailBox_Send(1);
+}
+
+// Temporary microphone event thread
+// Right now this does nothing on purpose so only one fake sensor
+// triggers during testing. You can later change this to:
+// OS_MailBox_Send(2);
+void MicrophoneEvent(void){
+    // placeholder for Luke's real microphone logic
+}
+
+// ============================================================
 // AlarmController — YOUR main thread
 // Implements the alarm state machine
 // Scheduled round-robin by the RTOS
@@ -39,7 +68,7 @@ int32_t AlarmStateMutex; // protects AlarmState reads/writes
 void AlarmController(void) {
     uint32_t sensorEvent;
 
-    while (1) {
+    while(1){
         sensorEvent = OS_MailBox_Recv(); // blocks until Luke's sensor task sends data
 
         OS_Wait(&AlarmStateMutex);
@@ -48,19 +77,19 @@ void AlarmController(void) {
 
             case DISARMED:
                 // Ignore all sensor events while disarmed
-                // State transitions handled by Tyrece's button task via OS_Signal
+                // State transitions handled by Tyrece's button task
                 break;
 
             case ARMED:
                 if (sensorEvent == 1 || sensorEvent == 2) {
                     // Intruder detected — trigger alarm
                     AlarmState = ALARM_TRIGGERED;
-                    // Tyrece's LED/buzzer task will observe state and react
+                    // Tyrece's LED/buzzer/LCD task will observe state and react
                 }
                 break;
 
             case ALARM_TRIGGERED:
-                // Stay triggered until user disarms via button (Tyrece's task)
+                // Stay triggered until user disarms via button
                 // Nothing to do here — just hold state
                 break;
         }
@@ -68,27 +97,42 @@ void AlarmController(void) {
         OS_Signal(&AlarmStateMutex);
     }
 }
+
 // ============================================================
 // ButtonHandler (Tyrece)
 // ============================================================
+// UPDATED:
+// - cleaned up button logic slightly
+// - removed buzzer writes from this task
+// Why?
+// Because DisplayTask should be the one place that controls
+// alarm buzzer behavior. This avoids tasks fighting over buzzer state.
+//
+// ASSUMPTION:
+// pressed = 0, released = 1
+// This matches common Tiva button logic.
+// ============================================================
 void ButtonHandler(void){
-    static uint8_t prev1 = 0, prev2 = 0; 
-    // remember last button state so we only trigger once per press
+    uint8_t prev1 = 1, prev2 = 1; 
+    // CHANGED:
+    // assume buttons start released
+    // makes edge detection cleaner and easier to reason about
 
-    uint8_t current;
+    uint8_t current1, current2;
 
     while(1){
 
         // ===== BUTTON 1 =====
-        current = BSP_Button1_Input();
+        current1 = BSP_Button1_Input();
 
-        // if button just got pressed (was not pressed before)
-        if((current == 0) && (prev1 != 0)){
+        // if button just got pressed
+        if((current1 == 0) && (prev1 == 1)){
 
             OS_Wait(&AlarmStateMutex); 
             // lock so no other task changes AlarmState at same time
 
-            // switch between ON and OFF
+            // switch between ARMED and DISARMED
+            // if alarm is triggered, this also disarms it
             if(AlarmState == DISARMED){
                 AlarmState = ARMED;
             } else {
@@ -97,18 +141,15 @@ void ButtonHandler(void){
 
             OS_Signal(&AlarmStateMutex); 
             // unlock after changing state
-
-            BSP_Buzzer_Set(512); 
-            // quick beep so user knows button worked
         }
 
-        prev1 = current; // save button state for next loop
+        prev1 = current1; // save button state for next loop
 
         // ===== BUTTON 2 =====
-        current = BSP_Button2_Input();
+        current2 = BSP_Button2_Input();
 
         // if button just got pressed
-        if((current == 0) && (prev2 != 0)){
+        if((current2 == 0) && (prev2 == 1)){
 
             OS_Wait(&AlarmStateMutex);
 
@@ -116,36 +157,59 @@ void ButtonHandler(void){
             // force system OFF no matter what
 
             OS_Signal(&AlarmStateMutex);
-
-            BSP_Buzzer_Set(512); // beep for feedback
         }
 
-        prev2 = current;
+        prev2 = current2;
 
         BSP_Delay1ms(50); 
         // small delay so one press doesn't count multiple times
+        // this acts like a simple debounce delay
     }
 }
+
 // ============================================================
 // DisplayTask (Tyrece)
 // ============================================================
+// UPDATED:
+// The original version kept AlarmStateMutex locked while updating
+// LED, buzzer, and LCD. That works, but it holds the shared state
+// lock longer than necessary.
+//
+// NEW APPROACH:
+// 1. lock AlarmStateMutex
+// 2. copy AlarmState into a local variable
+// 3. unlock AlarmStateMutex quickly
+// 4. update hardware using the local copy
+//
+// This is cleaner and safer for multitasking.
+// ============================================================
 void DisplayTask(void){
+    AlarmState_t localState;  
+    // NEW:
+    // local copy of the shared alarm state
 
     while(1){
 
         OS_Wait(&AlarmStateMutex); 
         // grab current system state safely
 
+        localState = AlarmState;  
+        // copy shared state quickly
+
+        OS_Signal(&AlarmStateMutex); 
+        // release lock immediately
+        // hardware updates below now use the local copy
+
         // ===== LED + BUZZER =====
-        if(AlarmState == DISARMED){
+        if(localState == DISARMED){
             BSP_RGB_Set(0,500,0);   // green = system off
             BSP_Buzzer_Set(0);      // no sound
         }
-        else if(AlarmState == ARMED){
+        else if(localState == ARMED){
             BSP_RGB_Set(500,500,0); // yellow = system ready
             BSP_Buzzer_Set(0);
         }
-        else if(AlarmState == ALARM_TRIGGERED){
+        else if(localState == ALARM_TRIGGERED){
             BSP_RGB_Set(500,0,0);   // red = alarm
             BSP_Buzzer_Set(512);    // make noise
         }
@@ -154,10 +218,10 @@ void DisplayTask(void){
         OS_Wait(&LCDmutex); 
         // make sure only this task writes to screen
 
-        if(AlarmState == DISARMED){
+        if(localState == DISARMED){
             BSP_LCD_DrawString(0,0,"SYSTEM: DISARMED", LCD_WHITE);
         }
-        else if(AlarmState == ARMED){
+        else if(localState == ARMED){
             BSP_LCD_DrawString(0,0,"SYSTEM: ARMED   ", LCD_WHITE);
         }
         else{
@@ -167,13 +231,11 @@ void DisplayTask(void){
         OS_Signal(&LCDmutex); 
         // done using screen
 
-        OS_Signal(&AlarmStateMutex); 
-        // done using shared state
-
         // slow things down so screen doesn't flicker
         for(volatile int i=0; i<500000; i++);
     }
 }
+
 // ============================================================
 // Dummy placeholder — used if a thread slot needs filling
 // during early testing (mirrors the lab's Dummy approach)
@@ -191,6 +253,11 @@ int main(void) {
     BSP_LCD_FillScreen(BSP_LCD_Color565(0, 0, 0));
     BSP_RGB_Init(0, 0, 0);
     BSP_Buzzer_Init(0);
+
+    // IMPORTANT:
+    // These are the LaunchPad button init calls.
+    // If your project is supposed to use BoosterPack buttons instead,
+    // these may need to be replaced with the correct BoosterPack driver calls.
     BSP_Button1_Init();
     BSP_Button2_Init();
 
@@ -201,18 +268,30 @@ int main(void) {
     // Initialize mailbox (Luke's sensor tasks -> AlarmController)
     OS_MailBox_Init();
 
-    // Add periodic event threads (Luke writes these — placeholders for now)
-    // Thread1: motion sensor @ 10 Hz (every 100ms)
-    // Thread2: microphone  @ 100 Hz (every 10ms)
-    // Replace Dummy() with Luke's actual functions when ready
-    OS_AddPeriodicEventThreads(&Dummy, 100, &Dummy, 10);
+    // Add periodic event threads
+    //
+    // OLD VERSION:
+    // OS_AddPeriodicEventThreads(&Dummy, 100, &Dummy, 10);
+    //
+    // PROBLEM:
+    // Dummy() never sends mailbox data, so AlarmController never receives
+    // any sensor event and the alarm can never trigger automatically.
+    //
+    // NEW VERSION:
+    // Use temporary test sensor functions so the state machine can be tested now.
+    //
+    // MotionSensorEvent runs every 1000 ticks here for easier testing.
+    // MicrophoneEvent is still a placeholder for now.
+    //
+    // LATER:
+    // Replace these with Luke's real sensor event threads and real periods.
+    OS_AddPeriodicEventThreads(&MotionSensorEvent, 1000, &MicrophoneEvent, 1000);
 
     // Add 4 main round-robin threads:
     // Thread 0: AlarmController (yours)
     // Thread 1: ButtonHandler   (Tyrece's — arm/disarm)
-    // Thread 2: DisplayTask     (Tyrece's — LCD)
+    // Thread 2: DisplayTask     (Tyrece's — LCD/LED/buzzer)
     // Thread 3: Dummy / spare
-    // Replace Dummy() below with Tyrece's actual functions when ready
     OS_AddThreads(&AlarmController, &ButtonHandler, &DisplayTask, &Dummy);
 
     OS_Launch(BSP_Clock_GetFreq() / THREADFREQ); // start RTOS, never returns
