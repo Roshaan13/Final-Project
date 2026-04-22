@@ -113,57 +113,69 @@ void AlarmController(void) {
 // This matches common Tiva button logic.
 // ============================================================
 void ButtonHandler(void){
-    uint8_t prev1 = 1, prev2 = 1; 
-    // CHANGED:
-    // assume buttons start released
-    // makes edge detection cleaner and easier to reason about
+    uint8_t prev1, prev2;        // stores previous button states
+    uint8_t current1, current2;  // stores current button states
 
-    uint8_t current1, current2;
+    // Read the initial state of both buttons
+    // BSP_ButtonX_Input() returns:
+    //   nonzero = button not pressed
+    //   0       = button pressed
+    // We convert that into:
+    //   1 = unpressed
+    //   0 = pressed
+    prev1 = (BSP_Button1_Input() != 0);
+    prev2 = (BSP_Button2_Input() != 0);
 
     while(1){
 
-        // ===== BUTTON 1 =====
-        current1 = BSP_Button1_Input();
+        // Read current button states each time through the loop
+        // This keeps the values simple for edge detection
+        current1 = (BSP_Button1_Input() != 0);  // Button 1: 1 = unpressed, 0 = pressed
+        current2 = (BSP_Button2_Input() != 0);  // Button 2: 1 = unpressed, 0 = pressed
 
-        // if button just got pressed
+        // Detect a new press on Button 1
+        // Condition means:
+        //   current1 == 0  -> button is pressed now
+        //   prev1 == 1     -> button was not pressed before
+        // So this catches the transition from unpressed to pressed
         if((current1 == 0) && (prev1 == 1)){
 
-            OS_Wait(&AlarmStateMutex); 
-            // lock so no other task changes AlarmState at same time
+            // Lock shared alarm state so no other task changes it at the same time
+            OS_Wait(&AlarmStateMutex);
 
-            // switch between ARMED and DISARMED
-            // if alarm is triggered, this also disarms it
+            // Button 1 toggles between DISARMED and ARMED
             if(AlarmState == DISARMED){
                 AlarmState = ARMED;
             } else {
                 AlarmState = DISARMED;
             }
 
-            OS_Signal(&AlarmStateMutex); 
-            // unlock after changing state
-        }
-
-        prev1 = current1; // save button state for next loop
-
-        // ===== BUTTON 2 =====
-        current2 = BSP_Button2_Input();
-
-        // if button just got pressed
-        if((current2 == 0) && (prev2 == 1)){
-
-            OS_Wait(&AlarmStateMutex);
-
-            AlarmState = DISARMED; 
-            // force system OFF no matter what
-
+            // Release the mutex after updating the shared state
             OS_Signal(&AlarmStateMutex);
         }
 
+        // Detect a new press on Button 2
+        // Button 2 always forces the system into DISARMED
+        if((current2 == 0) && (prev2 == 1)){
+
+            // Lock shared alarm state before changing it
+            OS_Wait(&AlarmStateMutex);
+
+            // Force alarm system to DISARMED
+            AlarmState = DISARMED;
+
+            // Release the mutex
+            OS_Signal(&AlarmStateMutex);
+        }
+
+        // Save current states so they become the "previous" states
+        // on the next loop iteration
+        prev1 = current1;
         prev2 = current2;
 
-        BSP_Delay1ms(50); 
-        // small delay so one press doesn't count multiple times
-        // this acts like a simple debounce delay
+        // Small delay for button debounce
+        // This helps prevent one press from being counted multiple times
+        BSP_Delay1ms(50);
     }
 }
 
