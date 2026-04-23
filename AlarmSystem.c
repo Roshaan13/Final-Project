@@ -7,9 +7,13 @@
 #include "../inc/BSP.h"
 #include "../inc/CortexM.h"
 #include "os.h"
+#define MOTION_THRESHOLD  150
+#define SOUND_THRESHOLD   80
+volatile uint8_t MotionLatched = 0;
+volatile uint8_t SoundLatched  = 0;
 
 #define THREADFREQ 1000  // 1ms time slice (1000 Hz)
-
+ 
 // ============================================================
 // Alarm State Machine
 // ============================================================
@@ -48,16 +52,99 @@ int32_t AlarmStateMutex; // protects AlarmState reads/writes
 
 // Temporary motion event thread
 // Sends a "motion detected" event into the mailbox
-void MotionSensorEvent(void){
-    OS_MailBox_Send(1);
+uint32_t AbsDiff(uint16_t a, uint16_t b){
+    if(a > b){
+        return (uint32_t)(a - b);
+    } else {
+        return (uint32_t)(b - a);
+    }
 }
 
-// Temporary microphone event thread
-// Right now this does nothing on purpose so only one fake sensor
-// triggers during testing. You can later change this to:
-// OS_MailBox_Send(2);
-void MicrophoneEvent(void){
-    // placeholder for Luke's real microphone logic
+uint8_t DetectIntruder(uint32_t motionValue, uint32_t soundValue){
+    if(motionValue > MOTION_THRESHOLD){
+        return 1;
+    }
+    if(soundValue > SOUND_THRESHOLD){
+        return 1;
+    }
+    return 0;
+}
+
+uint32_t ReadMotionSensor(void){
+    static uint8_t initialized = 0;
+    static uint16_t prevX = 0, prevY = 0, prevZ = 0;
+
+    uint16_t x, y, z;
+    uint32_t dx, dy, dz, motion;
+
+    BSP_Accelerometer_Input(&x, &y, &z);
+
+    if(initialized == 0){
+        prevX = x;
+        prevY = y;
+        prevZ = z;
+        initialized = 1;
+        return 0;
+    }
+
+    dx = AbsDiff(x, prevX);
+    dy = AbsDiff(y, prevY);
+    dz = AbsDiff(z, prevZ);
+
+    prevX = x;
+    prevY = y;
+    prevZ = z;
+
+    motion = dx + dy + dz;
+    return motion;
+}
+
+void MotionSensorTask(void){
+    uint32_t motionData;
+    uint8_t intruder;
+
+    motionData = ReadMotionSensor();
+    intruder = DetectIntruder(motionData, 0);
+
+    if(intruder){
+        OS_MailBox_Send(1);
+    }
+}
+
+
+uint32_t ReadMicrophone(void){
+    uint16_t mic;
+    uint32_t maxValue = 0;
+    uint32_t minValue = 1023;
+    uint32_t amplitude;
+    int i;
+
+    for(i = 0; i < 32; i++){
+        BSP_Microphone_Input(&mic);
+
+        if(mic > maxValue){
+            maxValue = mic;
+        }
+        if(mic < minValue){
+            minValue = mic;
+        }
+    }
+
+    amplitude = maxValue - minValue;
+    return amplitude;
+}
+
+
+void MicrophoneTask(void){
+    uint32_t soundData;
+    uint8_t intruder;
+
+    soundData = ReadMicrophone();
+    intruder = DetectIntruder(0, soundData);
+
+    if(intruder){
+        OS_MailBox_Send(2);
+    }
 }
 
 // ============================================================
@@ -265,6 +352,9 @@ int main(void) {
     BSP_LCD_FillScreen(BSP_LCD_Color565(0, 0, 0));
     BSP_RGB_Init(0, 0, 0);
     BSP_Buzzer_Init(0);
+	
+		BSP_Accelerometer_Init();
+		BSP_Microphone_Init();
 
     // IMPORTANT:
     // These are the LaunchPad button init calls.
@@ -297,7 +387,7 @@ int main(void) {
     //
     // LATER:
     // Replace these with Luke's real sensor event threads and real periods.
-    OS_AddPeriodicEventThreads(&MotionSensorEvent, 1000, &MicrophoneEvent, 1000);
+    OS_AddPeriodicEventThreads(&MotionSensorTask, 50, &MicrophoneTask, 10);
 
     // Add 4 main round-robin threads:
     // Thread 0: AlarmController (yours)
